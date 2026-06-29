@@ -117,11 +117,12 @@ export const zh: Dictionary = {
   "optimize.startScan": "开始扫描",
   "optimize.scanningInBackground": "后台扫描中...",
 
-  // ── 分析 ──
+  // ─ 分析 ──
   "analyze.title": "磁盘分析",
   "analyze.overview": "概览",
   "analyze.systemOverview": "系统磁盘概览",
   "analyze.startScan": "开始扫描",
+  "analyze.stopScan": "停止扫描",
   "analyze.scanningInBackground": "后台扫描中...",
   "analyze.selectAll": "全选",
   "analyze.deselectAll": "取消全选",

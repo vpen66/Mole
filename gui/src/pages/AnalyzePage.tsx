@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "@/i18n";
-import { HardDrive, Folder, File, ChevronRight, ArrowLeft, Eye, Trash2, RotateCcw, CheckCircle, Play } from "lucide-react";
+import { HardDrive, Folder, File, ChevronRight, ArrowLeft, Eye, Trash2, RotateCcw, CheckCircle, Play, Square } from "lucide-react";
 import { formatBytes } from "@/types/analyze";
 import type { AnalyzeResult, AnalyzeEntry, AnalyzeLargeFile, AnalyzeStreamEvent } from "@/types/analyze";
 import { ErrorBanner } from "@/components/shared/ErrorBanner";
@@ -144,7 +144,6 @@ export function AnalyzePage() {
 
   const handleDrillDown = (entry: AnalyzeEntry) => {
     if (!entry.is_dir) return;
-    console.log('[DrillDown] Entering directory:', entry.path);
     scanStore.pushPath(entry.path);
     scan(entry.path);
   };
@@ -161,12 +160,8 @@ export function AnalyzePage() {
 
   // Handle clicking on a breadcrumb path segment
   const handleBreadcrumbClick = (targetPath: string | null) => {
-    console.log('[Breadcrumb] Clicked:', targetPath);
-    console.log('[Breadcrumb] Current stack:', useScanStore.getState().pathStack);
-    
     if (targetPath === null) {
       // Go back to overview (root)
-      console.log('[Breadcrumb] Clearing paths and scanning overview');
       scanStore.clearPaths();
       scan(undefined);
     } else {
@@ -174,13 +169,10 @@ export function AnalyzePage() {
       const currentStack = useScanStore.getState().pathStack;
       const targetIndex = currentStack.indexOf(targetPath);
       
-      console.log('[Breadcrumb] Target index:', targetIndex, 'Current length:', currentStack.length);
-      
       if (targetIndex !== -1) {
         // Pop paths until we reach the target
         // We need to pop (currentLength - targetIndex - 1) times
         const popsNeeded = currentStack.length - targetIndex - 1;
-        console.log('[Breadcrumb] Popping', popsNeeded, 'paths');
         
         for (let i = 0; i < popsNeeded; i++) {
           scanStore.popPath();
@@ -188,14 +180,10 @@ export function AnalyzePage() {
         
         // Scan the target path if not already loaded
         if (!scanStore.getResult(targetPath)) {
-          console.log('[Breadcrumb] Scanning target path:', targetPath);
           scan(targetPath);
-        } else {
-          console.log('[Breadcrumb] Result already exists for:', targetPath);
         }
       } else {
         // Path not in stack, need to navigate there directly
-        console.log('[Breadcrumb] Path not in stack, navigating directly to:', targetPath);
         // Clear stack and set new path
         scanStore.setPathStack([targetPath]);
         scan(targetPath);
@@ -209,6 +197,14 @@ export function AnalyzePage() {
     scan(currentPath || undefined);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath]);
+
+  const handleStopScan = useCallback(() => {
+    // Increment abort ref to cancel current scan
+    scanAbortRef.current = (scanAbortRef.current ?? 0) + 1;
+    // Clear loading state
+    scanStore.setLoading(currentPath, false);
+    console.log('[Analyze] Scan stopped by user');
+  }, [currentPath, scanStore]);
 
   const handleSelectToggle = (path: string) => {
     setSelectedPaths(prev => {
@@ -306,24 +302,16 @@ export function AnalyzePage() {
                 const pathSegments = currentPath.split('/').filter(Boolean);
                 let accumulatedPath = '';
                 
-                console.log('[Breadcrumb] Current path:', currentPath);
-                console.log('[Breadcrumb] Path segments:', pathSegments);
-                
                 return pathSegments.map((segment, index) => {
                   accumulatedPath += '/' + segment;
                   const isLast = index === pathSegments.length - 1;
-                  
-                  console.log(`[Breadcrumb] Segment ${index}: "${segment}" -> accumulated: "${accumulatedPath}", isLast: ${isLast}`);
                   
                   return (
                     <React.Fragment key={accumulatedPath}>
                       <ChevronRight size={12} className="text-surface-500 shrink-0" />
                       {!isLast ? (
                         <button
-                          onClick={() => {
-                            console.log('[Breadcrumb] Click handler called for:', accumulatedPath);
-                            handleBreadcrumbClick(accumulatedPath);
-                          }}
+                          onClick={() => handleBreadcrumbClick(accumulatedPath)}
                           className={`font-mono text-xs truncate max-w-[150px] text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer`}
                           title={accumulatedPath}
                         >
@@ -355,6 +343,17 @@ export function AnalyzePage() {
 
       {/* Action toolbar */}
       <div className="flex items-center gap-2">
+        {/* Stop Scan button - only show when scanning */}
+        {loading && (
+          <button
+            onClick={handleStopScan}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-red-600/20 border border-red-600/50 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors"
+          >
+            <Square size={14} />
+            {t("analyze.stopScan")}
+          </button>
+        )}
+        
         {result && (
           <>
             {result.entries.length > 0 && (

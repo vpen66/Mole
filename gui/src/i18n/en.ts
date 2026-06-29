@@ -122,6 +122,7 @@ export const en: Dictionary = {
   "analyze.overview": "Overview",
   "analyze.systemOverview": "System disk overview",
   "analyze.startScan": "Start Scan",
+  "analyze.stopScan": "Stop Scan",
   "analyze.scanningInBackground": "Scanning in background...",
   "analyze.selectAll": "Select All",
   "analyze.deselectAll": "Deselect All",
