@@ -59,6 +59,33 @@ pub struct AppInfo {
     pub last_used: Option<String>,
 }
 
+/// System status info for the dashboard, parsed from `mo status --json`.
+#[derive(Serialize, Clone)]
+pub struct SystemStatus {
+    pub host: String,
+    pub platform: String,
+    pub uptime: String,
+    pub uptime_seconds: u64,
+    pub health_score: u64,
+    pub health_score_msg: String,
+    pub cpu_usage: f64,
+    pub cpu_core_count: u64,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub memory_available: u64,
+    pub memory_used_percent: f64,
+    pub disk_used: u64,
+    pub disk_total: u64,
+    pub disk_free: u64,
+    pub disk_used_percent: f64,
+    pub disk_size: String,
+    pub model: String,
+    pub cpu_model: String,
+    pub total_ram: String,
+    pub os_version: String,
+    pub trash_size: u64,
+}
+
 /// Parse a line from mole CLI output and emit a Tauri event to the frontend.
 fn emit_mole_event(window: &Window, event_name: &str, line: &str) {
     let trimmed = line.trim();
@@ -283,6 +310,13 @@ pub async fn get_free_space_kb(app: AppHandle) -> Result<u64, String> {
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
         if let Some(disks) = json.get("disks").and_then(|d| d.as_array()) {
             if let Some(first) = disks.first() {
+                // Calculate free = total - used (the JSON doesn't have a "free" field)
+                let total = first.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                let used = first.get("used").and_then(|v| v.as_u64()).unwrap_or(0);
+                if total > used {
+                    return Ok((total - used) / 1024);
+                }
+                // Also check for explicit "free" field as fallback
                 if let Some(free) = first.get("free").and_then(|f| f.as_u64()) {
                     return Ok(free / 1024);
                 }
@@ -305,6 +339,76 @@ pub async fn get_free_space_kb(app: AppHandle) -> Result<u64, String> {
         }
     }
     Err("Could not determine free space".to_string())
+}
+
+#[tauri::command]
+pub async fn get_system_status(app: AppHandle) -> Result<SystemStatus, String> {
+    let output = process::run_mole_capture(Some(&app), &["status", "--json"]).await?;
+    let json: serde_json::Value = serde_json::from_str(&output)
+        .map_err(|e| format!("Failed to parse status JSON: {}", e))?;
+
+    let get_str = |key: &str| json.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let get_u64 = |key: &str| json.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+
+    // Hardware info
+    let hw = json.get("hardware");
+    let model = hw.and_then(|h| h.get("model")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cpu_model = hw.and_then(|h| h.get("cpu_model")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let total_ram = hw.and_then(|h| h.get("total_ram")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let os_version = hw.and_then(|h| h.get("os_version")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let disk_size = hw.and_then(|h| h.get("disk_size")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // CPU
+    let cpu_obj = json.get("cpu");
+    let cpu_usage = cpu_obj
+        .and_then(|c| c.get("usage"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let cpu_core_count = cpu_obj
+        .and_then(|c| c.get("core_count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Memory
+    let mem = json.get("memory");
+    let memory_used = mem.and_then(|m| m.get("used")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let memory_total = mem.and_then(|m| m.get("total")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let memory_available = mem.and_then(|m| m.get("available")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let memory_used_percent = mem.and_then(|m| m.get("used_percent")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+    // Disk (first entry)
+    let disk = json.get("disks").and_then(|d| d.as_array()).and_then(|a| a.first());
+    let disk_used = disk.and_then(|d| d.get("used")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_total = disk.and_then(|d| d.get("total")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_used_percent = disk.and_then(|d| d.get("used_percent")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let disk_free = if disk_total > disk_used { disk_total - disk_used } else { 0 };
+
+    let trash_size = get_u64("trash_size");
+
+    Ok(SystemStatus {
+        host: get_str("host"),
+        platform: get_str("platform"),
+        uptime: get_str("uptime"),
+        uptime_seconds: get_u64("uptime_seconds"),
+        health_score: get_u64("health_score"),
+        health_score_msg: get_str("health_score_msg"),
+        cpu_usage,
+        cpu_core_count,
+        memory_used,
+        memory_total,
+        memory_available,
+        memory_used_percent,
+        disk_used,
+        disk_total,
+        disk_free,
+        disk_used_percent,
+        disk_size,
+        model,
+        cpu_model,
+        total_ram,
+        os_version,
+        trash_size,
+    })
 }
 
 #[tauri::command]

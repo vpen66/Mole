@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import { useT } from "@/i18n";
 import {
   Trash2,
   Download,
@@ -11,17 +12,19 @@ import {
 } from "lucide-react";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/clean", icon: Trash2, label: "Clean" },
-  { to: "/uninstall", icon: Download, label: "Uninstall" },
-  { to: "/purge", icon: FolderOpen, label: "Purge" },
-  { to: "/optimize", icon: Zap, label: "Optimize" },
-  { to: "/analyze", icon: HardDrive, label: "Analyze" },
-  { to: "/history", icon: History, label: "History" },
-  { to: "/settings", icon: Settings2, label: "Settings" },
+  { to: "/", icon: LayoutDashboard, labelKey: "nav.dashboard" },
+  { to: "/clean", icon: Trash2, labelKey: "nav.clean" },
+  { to: "/uninstall", icon: Download, labelKey: "nav.uninstall" },
+  { to: "/purge", icon: FolderOpen, labelKey: "nav.purge" },
+  { to: "/optimize", icon: Zap, labelKey: "nav.optimize" },
+  { to: "/analyze", icon: HardDrive, labelKey: "nav.analyze" },
+  { to: "/history", icon: History, labelKey: "nav.history" },
+  { to: "/settings", icon: Settings2, labelKey: "nav.settings" },
 ];
 
 export function Sidebar() {
+  const { t } = useT();
+
   return (
     <aside className="w-56 flex flex-col bg-surface-900 border-r border-surface-700 py-4 shrink-0">
       <div className="px-5 mb-8">
@@ -31,13 +34,13 @@ export function Sidebar() {
           </div>
           <div>
             <div className="font-semibold text-sm">Mole</div>
-            <div className="text-xs text-surface-400">Mac Cleanup</div>
+            <div className="text-xs text-surface-400">{t("nav.subtitle")}</div>
           </div>
         </div>
       </div>
 
       <nav className="flex flex-col gap-1 px-3">
-        {navItems.map(({ to, icon: Icon, label }) => (
+        {navItems.map(({ to, icon: Icon, labelKey }) => (
           <NavLink
             key={to}
             to={to}
@@ -51,7 +54,7 @@ export function Sidebar() {
             }
           >
             <Icon size={16} />
-            {label}
+            {t(labelKey)}
           </NavLink>
         ))}
       </nav>

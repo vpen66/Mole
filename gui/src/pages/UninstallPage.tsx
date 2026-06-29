@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
-import { useMoleCommand } from "@/hooks/useMoleCommand";
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useT } from "@/i18n";
 import { ProgressBar } from "@/components/shared/ProgressBar";
 import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { formatSize } from "@/types/common";
+import { useTabStore } from "@/hooks/useTabStore";
 import {
   Download,
   Play,
@@ -16,45 +18,69 @@ import {
 import type { AppInfo } from "@/types/uninstall";
 
 export function UninstallPage() {
-  const [apps, setApps] = useState<AppInfo[]>([]);
+  const { t } = useT();
   const [search, setSearch] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [done, setDone] = useState(false);
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
 
   const {
     status,
     progress,
     error,
-    execute: runScan,
-    reset,
-  } = useMoleCommand<AppInfo[]>({ command: "uninstall_scan_apps" });
+    scanned,
+    apps,
+  } = useTabStore((s) => s.uninstall);
+  const {
+    setUninstallStatus,
+    setUninstallError,
+    setUninstallProgress,
+    setUninstallScanned,
+    setUninstallApps,
+  } = useTabStore();
 
-  useEffect(() => {
-    const scanApps = async () => {
-      const result = await runScan();
-      if (result) {
-        setApps(result);
-      }
-    };
-    scanApps();
-  }, [runScan]);
+  const scan = async () => {
+    setUninstallStatus("scanning");
+    setUninstallError(null);
+    setUninstallProgress([]);
+
+    try {
+      const result = await invoke<AppInfo[]>("uninstall_scan_apps");
+      setUninstallApps(result);
+      setUninstallStatus("preview");
+      setUninstallScanned(true);
+    } catch (err) {
+      setUninstallError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const toggleApp = (name: string) => {
-    setApps((prev) =>
-      prev.map((a) => (a.name === name ? { ...a, selected: !a.selected } : a))
-    );
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
   };
 
   const selectAll = () => {
-    const allSelected = apps.every((a) => a.selected);
-    setApps((prev) => prev.map((a) => ({ ...a, selected: !allSelected })));
+    const allSelected = apps.every((a) => selectedNames.has(a.name));
+    if (allSelected) {
+      setSelectedNames(new Set());
+    } else {
+      setSelectedNames(new Set(apps.map((a) => a.name)));
+    }
   };
+
+  const appsWithSelection = apps.map((a) => ({
+    ...a,
+    selected: selectedNames.has(a.name),
+  }));
 
   const handleExecute = async () => {
     setConfirmOpen(false);
-    const targets = apps.filter((a) => a.selected).map((a) => a.name);
+    const targets = apps.filter((a) => selectedNames.has(a.name)).map((a) => a.name);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("uninstall_execute", { targets });
       setDone(true);
     } catch (err) {
@@ -62,33 +88,50 @@ export function UninstallPage() {
     }
   };
 
-  const selectedApps = apps.filter((a) => a.selected);
+  const selectedApps = apps.filter((a) => selectedNames.has(a.name));
   const selectedSizeKb = selectedApps.reduce((sum, a) => sum + a.size_kb, 0);
 
-  const filteredApps = apps.filter((a) =>
+  const filteredApps = appsWithSelection.filter((a) =>
     a.name.toLowerCase().includes(search.toLowerCase())
   );
-
-  const scanResult = status === "preview" && apps.length === 0;
 
   return (
     <div className="p-8 max-w-3xl space-y-6">
       <div>
         <h1 className="text-xl font-semibold flex items-center gap-2">
           <Download size={20} className="text-blue-400" />
-          Uninstall Apps
+          {t("uninstall.title")}
         </h1>
         <p className="text-sm text-surface-400 mt-1">
-          Select apps to remove along with their leftover files
+          {t("uninstall.subtitle")}
         </p>
       </div>
 
-      <ErrorBanner message={error} onDismiss={reset} />
+      <ErrorBanner message={error} onDismiss={() => setUninstallError(null)} />
       {status === "scanning" && <ProgressBar events={progress} />}
 
-      {scanResult && (
-        <div className="text-sm text-surface-400">
-          Scanning installed applications...
+      {/* Initial state - no scan started yet */}
+      {!scanned && status !== "scanning" && (
+        <div className="py-12 flex flex-col items-center justify-center gap-4">
+          <Download size={48} className="text-surface-500" />
+          <div className="text-sm text-surface-400">
+            {t("uninstall.subtitle")}
+          </div>
+          <button
+            onClick={scan}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+          >
+            <Play size={16} />
+            {t("uninstall.startScan")}
+          </button>
+        </div>
+      )}
+
+      {/* Scanning indicator - shows during background scans */}
+      {status === "scanning" && scanned && (
+        <div className="flex items-center gap-2 text-xs text-blue-400">
+          <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <span>{t("uninstall.scanningInBackground")}</span>
         </div>
       )}
 
@@ -105,7 +148,7 @@ export function UninstallPage() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search apps..."
+                placeholder={t("uninstall.searchPlaceholder")}
                 className="w-full bg-surface-800 border border-surface-600 rounded-lg pl-9 pr-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:outline-none focus:border-mole-600"
               />
             </div>
@@ -113,7 +156,7 @@ export function UninstallPage() {
               onClick={selectAll}
               className="text-xs text-surface-400 hover:text-surface-200 transition-colors shrink-0"
             >
-              {apps.every((a) => a.selected) ? "Deselect all" : "Select all"}
+              {selectedNames.size === apps.length ? t("uninstall.deselectAll") : t("uninstall.selectAll")}
             </button>
           </div>
 
@@ -124,13 +167,13 @@ export function UninstallPage() {
                 key={app.name}
                 onClick={() => toggleApp(app.name)}
                 className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors ${
-                  app.selected
+                  selectedNames.has(app.name)
                     ? "bg-blue-950/30 border border-blue-800/50"
                     : "bg-surface-800 border border-surface-700 hover:border-surface-500"
                 }`}
               >
                 <div className="shrink-0">
-                  {app.selected ? (
+                  {selectedNames.has(app.name) ? (
                     <CheckSquare size={16} className="text-blue-400" />
                   ) : (
                     <Square size={16} className="text-surface-500" />
@@ -143,7 +186,7 @@ export function UninstallPage() {
                     </span>
                     {app.is_running && (
                       <span className="text-[10px] bg-yellow-900/40 text-yellow-400 px-1.5 py-0.5 rounded uppercase font-medium">
-                        running
+                        {t("uninstall.running")}
                       </span>
                     )}
                     {app.is_blocked && (
@@ -168,9 +211,9 @@ export function UninstallPage() {
           {selectedApps.length > 0 && (
             <div className="flex items-center justify-between bg-surface-800 border border-surface-600 rounded-xl p-4">
               <div className="text-sm">
-                <span className="text-surface-400">Selected: </span>
+                <span className="text-surface-400">{t("common.selected")} </span>
                 <span className="font-medium">
-                  {selectedApps.length} apps ({formatSize(selectedSizeKb)})
+                  {t("uninstall.selectedApps", { count: selectedApps.length, size: formatSize(selectedSizeKb) })}
                 </span>
               </div>
               <button
@@ -178,7 +221,7 @@ export function UninstallPage() {
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
               >
                 <Play size={14} />
-                Uninstall
+                {t("uninstall.button")}
               </button>
             </div>
           )}
@@ -189,15 +232,15 @@ export function UninstallPage() {
         <div className="bg-mole-950/40 border border-mole-800/50 rounded-xl p-4 flex items-center gap-3">
           <CheckCircle2 size={20} className="text-mole-400 shrink-0" />
           <div className="text-sm text-mole-300">
-            Uninstall complete. Apps and leftovers have been removed.
+            {t("uninstall.complete")}
           </div>
         </div>
       )}
 
       <ConfirmDialog
         open={confirmOpen}
-        title="Uninstall Selected Apps"
-        message={`This will remove ${selectedApps.length} app(s) and their associated files. App bundles will be moved to Trash.`}
+        title={t("uninstall.confirmTitle")}
+        message={t("uninstall.confirmMessage", { count: selectedApps.length })}
         totalSizeKb={selectedSizeKb}
         totalItems={selectedApps.length}
         onConfirm={handleExecute}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useT } from "@/i18n";
 import { History, Trash2, Download, FolderOpen, Zap } from "lucide-react";
 
 interface HistorySession {
@@ -30,6 +31,7 @@ const commandIcons: Record<string, React.ElementType> = {
 };
 
 export function HistoryPage() {
+  const { t } = useT();
   const [sessions, setSessions] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -47,20 +49,20 @@ export function HistoryPage() {
       <div>
         <h1 className="text-xl font-semibold flex items-center gap-2">
           <History size={20} className="text-surface-300" />
-          Operation History
+          {t("history.title")}
         </h1>
         <p className="text-sm text-surface-400 mt-1">
-          Recent cleanup and optimization sessions
+          {t("history.subtitle")}
         </p>
       </div>
 
       {loading && (
-        <div className="text-sm text-surface-400">Loading history...</div>
+        <div className="text-sm text-surface-400">{t("history.loading")}</div>
       )}
 
       {!loading && sessions.length === 0 && (
         <div className="text-sm text-surface-400 bg-surface-800 border border-surface-700 rounded-xl p-6 text-center">
-          No operation history yet. Run a cleanup or optimization to get started.
+          {t("history.empty")}
         </div>
       )}
 
@@ -86,7 +88,7 @@ export function HistoryPage() {
                     </span>
                   </div>
                   <div className="text-xs text-surface-400 mt-0.5">
-                    {session.items} items, {session.operation_count} operations
+                    {t("history.itemsOps", { items: session.items, ops: session.operation_count })}
                   </div>
                 </div>
                 <div className="text-right shrink-0">
@@ -94,8 +96,7 @@ export function HistoryPage() {
                     {session.size}
                   </div>
                   <div className="text-xs text-surface-500">
-                    {session.actions.trashed} trashed, {session.actions.removed}{" "}
-                    removed
+                    {t("history.trashedRemoved", { trashed: session.actions.trashed, removed: session.actions.removed })}
                   </div>
                 </div>
               </div>

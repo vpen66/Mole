@@ -465,7 +465,10 @@ func scanSubdirWithCache(root string, largeFileChan chan<- fileEntry, largeFileM
 		return cached
 	}
 
-	result, err := scanPathConcurrentWithLimiter(root, filesScanned, dirsScanned, bytesScanned, currentPath, false, maxEntries, limiter, onEntry)
+	// Pass nil for onEntry to prevent nested subdirectory entries from being
+	// streamed to the frontend at the same level as the root directory entries.
+	// Only direct children of the scanned root should trigger onEntry.
+	result, err := scanPathConcurrentWithLimiter(root, filesScanned, dirsScanned, bytesScanned, currentPath, false, maxEntries, limiter, nil)
 	if err == nil {
 		publishLargeFiles(result.LargeFiles, largeFileChan)
 		// A subtree whose size depended on hardlink dedup is scan-order

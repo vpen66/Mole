@@ -11,6 +11,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_mole_version,
             get_free_space_kb,
+            get_system_status,
             clean_dry_run,
             clean_execute,
             uninstall_scan_apps,

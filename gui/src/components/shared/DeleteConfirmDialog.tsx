@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "@/i18n";
 import { Trash2, X } from "lucide-react";
 
 interface DeleteConfirmDialogProps {
@@ -17,18 +18,22 @@ export function DeleteConfirmDialog({
   itemCount,
   onConfirm,
   onCancel,
-  title = "Delete Items",
+  title,
   message,
-  confirmText = "Move to Trash",
-  cancelText = "Cancel",
+  confirmText,
+  cancelText,
 }: DeleteConfirmDialogProps) {
+  const { t } = useT();
   const [isConfirming, setIsConfirming] = useState(false);
 
   if (!isOpen) return null;
 
+  const resolvedTitle = title ?? t("delete.title");
+  const resolvedConfirmText = confirmText ?? t("delete.moveToTrash");
+  const resolvedCancelText = cancelText ?? t("common.cancel");
   const defaultMessage = itemCount === 1
-    ? "Are you sure you want to move this item to Trash? This action can be undone."
-    : `Are you sure you want to move ${itemCount} items to Trash? This action can be undone.`;
+    ? t("delete.confirmSingle")
+    : t("delete.confirmMultiple", { count: itemCount });
 
   const handleConfirm = async () => {
     setIsConfirming(true);
@@ -48,7 +53,7 @@ export function DeleteConfirmDialog({
             <div className="p-2 bg-red-500/10 rounded-lg">
               <Trash2 size={20} className="text-red-400" />
             </div>
-            <h3 className="text-lg font-semibold text-white">{title}</h3>
+            <h3 className="text-lg font-semibold text-white">{resolvedTitle}</h3>
           </div>
           <button
             onClick={onCancel}
@@ -73,7 +78,7 @@ export function DeleteConfirmDialog({
             disabled={isConfirming}
             className="px-4 py-2 text-sm font-medium text-surface-300 bg-surface-800 border border-surface-700 rounded-lg hover:bg-surface-750 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {cancelText}
+            {resolvedCancelText}
           </button>
           <button
             onClick={handleConfirm}
@@ -83,12 +88,12 @@ export function DeleteConfirmDialog({
             {isConfirming ? (
               <>
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Deleting...
+                {t("common.deleting")}
               </>
             ) : (
               <>
                 <Trash2 size={14} />
-                {confirmText}
+                {resolvedConfirmText}
               </>
             )}
           </button>

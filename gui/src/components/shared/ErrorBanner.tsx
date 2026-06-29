@@ -1,4 +1,5 @@
 import { AlertCircle } from "lucide-react";
+import { useT } from "@/i18n";
 
 interface ErrorBannerProps {
   message: string | null;
@@ -6,6 +7,7 @@ interface ErrorBannerProps {
 }
 
 export function ErrorBanner({ message, onDismiss }: ErrorBannerProps) {
+  const { t } = useT();
   if (!message) return null;
 
   return (
@@ -17,7 +19,7 @@ export function ErrorBanner({ message, onDismiss }: ErrorBannerProps) {
           onClick={onDismiss}
           className="text-red-400 hover:text-red-200 text-xs"
         >
-          Dismiss
+          {t("common.dismiss")}
         </button>
       )}
     </div>

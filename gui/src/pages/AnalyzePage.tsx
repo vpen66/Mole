@@ -1,30 +1,48 @@
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { HardDrive, Folder, File, ChevronRight, ArrowLeft, Eye, Trash2, RotateCcw, CheckCircle } from "lucide-react";
+import { useT } from "@/i18n";
+import { HardDrive, Folder, File, ChevronRight, ArrowLeft, Eye, Trash2, RotateCcw, CheckCircle, Play } from "lucide-react";
 import { formatBytes } from "@/types/analyze";
 import type { AnalyzeResult, AnalyzeEntry, AnalyzeLargeFile, AnalyzeStreamEvent } from "@/types/analyze";
 import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { DeleteConfirmDialog } from "@/components/shared/DeleteConfirmDialog";
+import { useScanStore } from "@/hooks/useScanStore";
 
 export function AnalyzePage() {
-  const [result, setResult] = useState<AnalyzeResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [pathStack, setPathStack] = useState<string[]>([]);
-  const [entryCount, setEntryCount] = useState(0);
+  const { t } = useT();
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const currentPath = pathStack.length > 0 ? pathStack[pathStack.length - 1] : null;
+  // Use global scan store for persistent state across tab switches
+  const scanStore = useScanStore();
+
+  // Use pathStack from global store (persists across tab switches)
+  const pathStack = useScanStore((s) => s.pathStack);
+  const initialScanDone = useRef(false);
+  const scanAbortRef = useRef(0);
+
+  const currentPath = pathStack.length > 0 ? pathStack[pathStack.length - 1] ?? null : null;
+  
+  // Get current state from store
+  const result = scanStore.getResult(currentPath);
+  const loading = scanStore.isLoading(currentPath);
+  const error = scanStore.getError(currentPath);
+  const entryCount = scanStore.getEntryCount(currentPath);
 
   const scan = useCallback(async (path?: string) => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setEntryCount(0);
+    // Abort any previous in-flight scan so its completion cannot
+    // overwrite the new scan's data.
+    scanAbortRef.current = (scanAbortRef.current ?? 0) + 1;
+    const myAbortId = scanAbortRef.current;
+
+    const key: string | null = path ?? null;
+
+    // Start scan in store
+    scanStore.startScan(key);
+    scanStore.setEntryCount(key, 0);
 
     // Accumulate NDJSON streaming events into an AnalyzeResult
     const entries: AnalyzeEntry[] = [];
@@ -38,6 +56,7 @@ export function AnalyzePage() {
     const unlisten = await listen<AnalyzeStreamEvent>(
       "mole-analyze_scan-event",
       (event) => {
+        if (myAbortId !== scanAbortRef.current) return;
         const payload = event.payload;
         switch (payload.type) {
           case "progress":
@@ -52,16 +71,19 @@ export function AnalyzePage() {
               cleanable: payload.cleanable,
               last_access: payload.last_access,
             });
-            setEntryCount(entries.length);
+            scanStore.setEntryCount(key, entries.length);
             // Update result incrementally so entries appear during scanning
-            setResult({
-              path: summaryPath,
-              overview: isOverview,
-              entries: [...entries],
-              large_files: largeFiles.length > 0 ? [...largeFiles] : undefined,
-              total_size: totalSize,
-              total_files: totalFiles,
-            });
+            scanStore.updateResult(
+              key,
+              {
+                path: summaryPath,
+                overview: isOverview,
+                total_size: totalSize,
+                total_files: totalFiles,
+              },
+              [...entries],
+              largeFiles.length > 0 ? [...largeFiles] : undefined
+            );
             break;
           case "large_file":
             largeFiles.push({
@@ -83,43 +105,110 @@ export function AnalyzePage() {
     try {
       await invoke<string>("analyze_scan", { path: path ?? null });
 
+      // If a newer scan was started while we were waiting, bail out.
+      if (myAbortId !== scanAbortRef.current) return;
+
       // Final result from accumulated events
-      setResult({
+      const finalResult: AnalyzeResult = {
         path: summaryPath,
         overview: isOverview,
         entries,
         large_files: largeFiles.length > 0 ? largeFiles : undefined,
         total_size: totalSize,
         total_files: totalFiles,
-      });
+      };
+
+      scanStore.completeScan(key, finalResult);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (myAbortId !== scanAbortRef.current) return;
+      scanStore.setError(key, err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
       unlisten();
     }
+  }, [scanStore]);
+
+  // Trigger initial scan on mount if no result exists for current path
+  useEffect(() => {
+    if (!initialScanDone.current) {
+      initialScanDone.current = true;
+      const key = currentPath ?? null;
+      const store = useScanStore.getState();
+      if (!store.getResult(key) && !store.isLoading(key)) {
+        scan(currentPath || undefined);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    scan();
-  }, [scan]);
+
 
   const handleDrillDown = (entry: AnalyzeEntry) => {
     if (!entry.is_dir) return;
-    setPathStack((prev) => [...prev, entry.path]);
+    console.log('[DrillDown] Entering directory:', entry.path);
+    scanStore.pushPath(entry.path);
     scan(entry.path);
   };
 
   const handleGoBack = () => {
-    const newStack = pathStack.slice(0, -1);
-    setPathStack(newStack);
-    const parentPath = newStack.length > 0 ? newStack[newStack.length - 1] : undefined;
-    scan(parentPath);
+    scanStore.popPath();
+    const newStack = useScanStore.getState().pathStack;
+    const parentPath: string | null = newStack.length > 0 ? (newStack[newStack.length - 1] ?? null) : null;
+    // Only scan if no existing result for parent
+    if (!scanStore.getResult(parentPath)) {
+      scan(parentPath ?? undefined);
+    }
+  };
+
+  // Handle clicking on a breadcrumb path segment
+  const handleBreadcrumbClick = (targetPath: string | null) => {
+    console.log('[Breadcrumb] Clicked:', targetPath);
+    console.log('[Breadcrumb] Current stack:', useScanStore.getState().pathStack);
+    
+    if (targetPath === null) {
+      // Go back to overview (root)
+      console.log('[Breadcrumb] Clearing paths and scanning overview');
+      scanStore.clearPaths();
+      scan(undefined);
+    } else {
+      // Find the index of the target path in the stack
+      const currentStack = useScanStore.getState().pathStack;
+      const targetIndex = currentStack.indexOf(targetPath);
+      
+      console.log('[Breadcrumb] Target index:', targetIndex, 'Current length:', currentStack.length);
+      
+      if (targetIndex !== -1) {
+        // Pop paths until we reach the target
+        // We need to pop (currentLength - targetIndex - 1) times
+        const popsNeeded = currentStack.length - targetIndex - 1;
+        console.log('[Breadcrumb] Popping', popsNeeded, 'paths');
+        
+        for (let i = 0; i < popsNeeded; i++) {
+          scanStore.popPath();
+        }
+        
+        // Scan the target path if not already loaded
+        if (!scanStore.getResult(targetPath)) {
+          console.log('[Breadcrumb] Scanning target path:', targetPath);
+          scan(targetPath);
+        } else {
+          console.log('[Breadcrumb] Result already exists for:', targetPath);
+        }
+      } else {
+        // Path not in stack, need to navigate there directly
+        console.log('[Breadcrumb] Path not in stack, navigating directly to:', targetPath);
+        // Clear stack and set new path
+        scanStore.setPathStack([targetPath]);
+        scan(targetPath);
+      }
+    }
   };
 
   const handleRefresh = useCallback(() => {
+    // Always trigger a fresh scan (corresponds to 'r' key in mole CLI)
+    scanStore.clearPath(currentPath);
     scan(currentPath || undefined);
-  }, [scan, currentPath]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPath]);
 
   const handleSelectToggle = (path: string) => {
     setSelectedPaths(prev => {
@@ -135,8 +224,11 @@ export function AnalyzePage() {
 
   const handleSelectAll = () => {
     if (!result) return;
-    // Select all items (both directories and files)
-    const allPaths = result.entries.map(e => e.path);
+    // Select all items: entries + large files
+    const allPaths = [
+      ...result.entries.map(e => e.path),
+      ...(result.large_files?.map(f => f.path) ?? []),
+    ];
     
     if (selectedPaths.size === allPaths.length && allPaths.length > 0) {
       setSelectedPaths(new Set());
@@ -194,69 +286,122 @@ export function AnalyzePage() {
       <div>
         <h1 className="text-xl font-semibold flex items-center gap-2">
           <HardDrive size={20} className="text-cyan-400" />
-          Disk Analyzer
+          {t("analyze.title")}
         </h1>
         <p className="text-sm text-surface-400 mt-1">
           {currentPath ? (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1 flex-wrap">
+              {/* Overview link */}
               <button
-                onClick={handleGoBack}
+                onClick={() => handleBreadcrumbClick(null)}
                 className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300 transition-colors"
               >
                 <ArrowLeft size={13} />
-                Overview
+                {t("analyze.overview")}
               </button>
-              <ChevronRight size={12} className="text-surface-500" />
-              <span className="text-surface-300 font-mono text-xs">
-                {currentPath}
-              </span>
+              
+              {/* Breadcrumb path segments */}
+              {(() => {
+                // Parse the current path into segments
+                const pathSegments = currentPath.split('/').filter(Boolean);
+                let accumulatedPath = '';
+                
+                console.log('[Breadcrumb] Current path:', currentPath);
+                console.log('[Breadcrumb] Path segments:', pathSegments);
+                
+                return pathSegments.map((segment, index) => {
+                  accumulatedPath += '/' + segment;
+                  const isLast = index === pathSegments.length - 1;
+                  
+                  console.log(`[Breadcrumb] Segment ${index}: "${segment}" -> accumulated: "${accumulatedPath}", isLast: ${isLast}`);
+                  
+                  return (
+                    <React.Fragment key={accumulatedPath}>
+                      <ChevronRight size={12} className="text-surface-500 shrink-0" />
+                      {!isLast ? (
+                        <button
+                          onClick={() => {
+                            console.log('[Breadcrumb] Click handler called for:', accumulatedPath);
+                            handleBreadcrumbClick(accumulatedPath);
+                          }}
+                          className={`font-mono text-xs truncate max-w-[150px] text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer`}
+                          title={accumulatedPath}
+                        >
+                          {segment}
+                        </button>
+                      ) : (
+                        <span
+                          className={`font-mono text-xs truncate max-w-[150px] text-surface-300`}
+                          title={accumulatedPath}
+                        >
+                          {segment}
+                        </span>
+                      )}
+                    </React.Fragment>
+                  );
+                });
+              })()}
             </span>
           ) : (
-            "System disk overview"
+            t("analyze.systemOverview")
           )}
         </p>
       </div>
 
-      <ErrorBanner message={error} onDismiss={() => setError(null)} />
+      <ErrorBanner message={error} onDismiss={() => scanStore.setError(currentPath, null)} />
       {deleteError && (
         <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(null)} />
       )}
 
       {/* Action toolbar */}
-      {!loading && result && (
-        <div className="flex items-center gap-2">
-          {result.entries.length > 0 && (
+      <div className="flex items-center gap-2">
+        {result && (
+          <>
+            {result.entries.length > 0 && (
+              <button
+                onClick={handleSelectAll}
+                disabled={deleting}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-surface-800 border border-surface-700 rounded-lg hover:bg-surface-750 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <CheckCircle size={14} />
+                {selectedPaths.size === (result.entries.length + (result.large_files?.length ?? 0)) ? t("analyze.deselectAll") : t("analyze.selectAll")}
+              </button>
+            )}
+            
             <button
-              onClick={handleSelectAll}
+              onClick={handleRefresh}
               disabled={deleting}
               className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-surface-800 border border-surface-700 rounded-lg hover:bg-surface-750 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <CheckCircle size={14} />
-              {selectedPaths.size === result.entries.length ? 'Deselect All' : 'Select All'}
+              <RotateCcw size={14} className={loading ? "animate-spin" : ""} />
+              {t("common.refresh")}
             </button>
-          )}
-          
+            
+            {selectedPaths.size > 0 && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-red-600/20 border border-red-600/50 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
+              >
+                <Trash2 size={14} />
+                {t("analyze.delete")} ({selectedPaths.size})
+              </button>
+            )}
+          </>
+        )}
+        
+        {/* Start Scan button - only when no result and not loading */}
+        {!result && !loading && !error && (
           <button
-            onClick={handleRefresh}
-            disabled={deleting || loading}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-surface-800 border border-surface-700 rounded-lg hover:bg-surface-750 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => scan(currentPath || undefined)}
+            disabled={deleting}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-cyan-600 hover:bg-cyan-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <RotateCcw size={14} />
-            Refresh
+            <Play size={14} />
+            {t("analyze.startScan")}
           </button>
-          
-          {selectedPaths.size > 0 && (
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-red-600/20 border border-red-600/50 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
-            >
-              <Trash2 size={14} />
-              Delete ({selectedPaths.size})
-            </button>
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmDialog
@@ -264,11 +409,22 @@ export function AnalyzePage() {
         itemCount={selectedPaths.size}
         onConfirm={handleDeleteConfirm}
         onCancel={handleDeleteCancel}
-        title="Delete Items"
-        confirmText="Move to Trash"
+        title={t("analyze.deleteTitle")}
+        confirmText={t("analyze.moveToTrash")}
       />
 
-      {loading && !result && (
+      {/* Initial state - no scan started yet */}
+      {!result && !loading && !error && (
+        <div className="py-12 flex flex-col items-center justify-center gap-4">
+          <HardDrive size={48} className="text-surface-500" />
+          <div className="text-sm text-surface-400">
+            {currentPath ? t("analyze.scanningDir") : t("analyze.systemOverview")}
+          </div>
+        </div>
+      )}
+
+      {/* Scanning indicator - shows during background scans (even when results are streaming) */}
+      {loading && result && result.entries.length === 0 && (
         <div className="py-12 flex flex-col items-center justify-center gap-4">
           {/* Pulsing scan animation */}
           <div className="relative w-16 h-16">
@@ -279,18 +435,18 @@ export function AnalyzePage() {
             <HardDrive size={16} className="absolute inset-0 m-auto text-cyan-400" />
           </div>
           <div className="text-sm text-surface-400">
-            {currentPath ? "Scanning directory..." : "Scanning system overview..."}
+            {currentPath ? t("analyze.scanningDir") : t("analyze.scanningOverview")}
           </div>
         </div>
       )}
 
       {result && (
         <>
-          {/* Scanning indicator */}
+          {/* Scanning indicator - shows during background scans */}
           {loading && (
-            <div className="flex items-center gap-2 text-xs text-cyan-400">
+            <div className="flex items-center gap-2 text-xs text-cyan-400 mb-3">
               <div className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              <span>Scanning... {entryCount > 0 && `${entryCount} entries found`}</span>
+              <span>{t("analyze.scanningInBackground")} {entryCount > 0 && t("analyze.entriesFound", { count: entryCount })}</span>
             </div>
           )}
 
@@ -302,12 +458,12 @@ export function AnalyzePage() {
                   {formatBytes(result.total_size)}
                 </span>
                 <span className="text-surface-400 ml-1">
-                  {result.overview ? "total used" : "in this directory"}
+                  {result.overview ? t("analyze.totalUsed") : t("analyze.inThisDir")}
                 </span>
               </div>
               {result.total_files !== undefined && (
                 <div className="text-xs text-surface-400">
-                  {result.total_files.toLocaleString()} files
+                  {result.total_files.toLocaleString()} {t("common.files")}
                 </div>
               )}
             </div>
@@ -332,23 +488,18 @@ export function AnalyzePage() {
             <div className="mt-6">
               <h2 className="text-sm font-medium text-surface-300 mb-2 flex items-center gap-2">
                 <File size={14} className="text-amber-400" />
-                Large Files
+                {t("analyze.largeFiles")}
               </h2>
               <div className="space-y-1">
                 {result.large_files
                   .sort((a, b) => b.size - a.size)
                   .map((file) => (
-                    <div
+                    <LargeFileRow
                       key={file.path}
-                      className="flex items-center justify-between px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-xs"
-                    >
-                      <span className="text-surface-300 truncate flex-1 font-mono">
-                        {file.name}
-                      </span>
-                      <span className="text-amber-400 ml-3 shrink-0">
-                        {formatBytes(file.size)}
-                      </span>
-                    </div>
+                      file={file}
+                      isSelected={selectedPaths.has(file.path)}
+                      onSelectToggle={() => handleSelectToggle(file.path)}
+                    />
                   ))}
               </div>
             </div>
@@ -372,22 +523,30 @@ function EntryRow({
   isSelected?: boolean;
   onSelectToggle?: () => void;
 }) {
+  const { t } = useT();
   const pct = maxSize > 0 ? Math.max(2, (entry.size / maxSize) * 100) : 2;
   const isDir = entry.is_dir;
 
+  const handleRowClick = () => {
+    if (isDir) {
+      onDrillDown(entry);
+    }
+  };
+
   return (
-    <button
-      onClick={() => isDir && onDrillDown(entry)}
-      disabled={!isDir}
-      className={`w-full flex items-center gap-3 px-3 py-2 border rounded-lg hover:bg-surface-750 transition-colors group text-left disabled:opacity-70 disabled:cursor-default ${
+    <div
+      onClick={handleRowClick}
+      className={`w-full flex items-center gap-3 px-3 py-2 border rounded-lg hover:bg-surface-750 transition-colors group text-left ${
+        isDir ? 'cursor-pointer' : 'cursor-default'
+      } ${
         isSelected
           ? 'bg-cyan-900/30 border-cyan-500/50'
           : 'bg-surface-800 border-surface-700'
       }`}
     >
-      {/* Selection checkbox or placeholder for alignment */}
+      {/* Selection checkbox */}
       <div 
-        onClick={(e) => {
+        onClick={(e: React.MouseEvent) => {
           e.stopPropagation();
           onSelectToggle?.();
         }}
@@ -413,7 +572,7 @@ function EntryRow({
           <span className="text-sm text-surface-200 truncate">{entry.name}</span>
           {entry.cleanable && (
             <span className="text-[10px] text-green-400 uppercase font-medium shrink-0">
-              cleanable
+              {t("analyze.cleanable")}
             </span>
           )}
         </div>
@@ -441,6 +600,48 @@ function EntryRow({
           />
         )}
       </div>
-    </button>
+    </div>
+  );
+}
+
+function LargeFileRow({
+  file,
+  isSelected = false,
+  onSelectToggle,
+}: {
+  file: AnalyzeLargeFile;
+  isSelected?: boolean;
+  onSelectToggle?: () => void;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-3 px-3 py-2 border rounded-lg text-xs transition-colors ${
+        isSelected
+          ? 'bg-cyan-900/30 border-cyan-500/50'
+          : 'bg-surface-800 border-surface-700'
+      }`}
+    >
+      {/* Selection checkbox */}
+      <div 
+        onClick={(e: React.MouseEvent) => {
+          e.stopPropagation();
+          onSelectToggle?.();
+        }}
+        className={`flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors ${
+          isSelected
+            ? 'bg-cyan-500 border-cyan-500'
+            : 'border-surface-600 hover:border-surface-500'
+        }`}
+      >
+        {isSelected && <CheckCircle size={12} className="text-white" />}
+      </div>
+      <File size={13} className="text-amber-400 shrink-0" />
+      <span className="text-surface-300 truncate flex-1 font-mono">
+        {file.name}
+      </span>
+      <span className="text-amber-400 ml-3 shrink-0">
+        {formatBytes(file.size)}
+      </span>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { AlertTriangle, X } from "lucide-react";
+import { useT } from "@/i18n";
 import { formatSize } from "@/types/common";
 
 interface ConfirmDialogProps {
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const { t } = useT();
   if (!open) return null;
 
   return (
@@ -42,7 +44,7 @@ export function ConfirmDialog({
 
           {totalSizeKb !== undefined && totalSizeKb > 0 && (
             <div className="bg-surface-900 rounded-lg p-3 flex items-center justify-between">
-              <span className="text-xs text-surface-400">Space to free</span>
+              <span className="text-xs text-surface-400">{t("dialog.spaceToFree")}</span>
               <span className="text-sm font-medium text-mole-400">
                 {formatSize(totalSizeKb)}
               </span>
@@ -51,7 +53,7 @@ export function ConfirmDialog({
 
           {totalItems !== undefined && totalItems > 0 && (
             <div className="bg-surface-900 rounded-lg p-3 flex items-center justify-between">
-              <span className="text-xs text-surface-400">Items</span>
+              <span className="text-xs text-surface-400">{t("common.items")}</span>
               <span className="text-sm font-medium">{totalItems}</span>
             </div>
           )}
@@ -60,8 +62,7 @@ export function ConfirmDialog({
             <div className="flex items-start gap-2 text-yellow-400 bg-yellow-950/30 border border-yellow-800/40 rounded-lg p-3">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <span className="text-xs">
-                This operation requires administrator privileges. A system
-                password dialog will appear.
+                {t("dialog.sudoWarning")}
               </span>
             </div>
           )}
@@ -72,13 +73,13 @@ export function ConfirmDialog({
             onClick={onCancel}
             className="flex-1 px-4 py-2 text-sm rounded-lg border border-surface-600 text-surface-300 hover:bg-surface-700 transition-colors"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             onClick={onConfirm}
             className="flex-1 px-4 py-2 text-sm rounded-lg bg-mole-600 text-white font-medium hover:bg-mole-700 transition-colors"
           >
-            Execute
+            {t("common.execute")}
           </button>
         </div>
       </div>

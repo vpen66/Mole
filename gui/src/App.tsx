@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { I18nProvider } from "@/i18n";
 import { Layout } from "@/components/layout/Layout";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { CleanPage } from "@/pages/CleanPage";
@@ -11,9 +12,10 @@ import { SettingsPage } from "@/pages/SettingsPage";
 
 function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
+    <I18nProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/clean" element={<CleanPage />} />
           <Route path="/uninstall" element={<UninstallPage />} />
@@ -22,9 +24,10 @@ function App() {
           <Route path="/analyze" element={<AnalyzePage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </I18nProvider>
   );
 }
 

@@ -1,4 +1,5 @@
 import { Loader2 } from "lucide-react";
+import { useT } from "@/i18n";
 import type { ProgressEvent } from "@/types/common";
 
 interface ProgressBarProps {
@@ -7,9 +8,10 @@ interface ProgressBarProps {
 }
 
 export function ProgressBar({ events, label }: ProgressBarProps) {
+  const { t } = useT();
   const latestEvent = events[events.length - 1];
   const percent = latestEvent?.percent;
-  const message = latestEvent?.message ?? label ?? "Working...";
+  const message = latestEvent?.message ?? label ?? t("common.working");
   const section = latestEvent?.section ?? "";
 
   return (
