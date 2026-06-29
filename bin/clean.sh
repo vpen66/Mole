@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/core/common.sh"
 
 source "$SCRIPT_DIR/../lib/core/sudo.sh"
+source "$SCRIPT_DIR/../lib/core/json_output.sh"
 source "$SCRIPT_DIR/../lib/clean/brew.sh"
 source "$SCRIPT_DIR/../lib/clean/caches.sh"
 source "$SCRIPT_DIR/../lib/clean/apps.sh"
@@ -24,6 +25,7 @@ source "$SCRIPT_DIR/../lib/clean/user.sh"
 
 SYSTEM_CLEAN=false
 DRY_RUN=false
+JSON_OUTPUT=false
 PROTECT_FINDER_METADATA=false
 EXTERNAL_VOLUME_TARGET=""
 IS_M_SERIES=$([[ "$(uname -m)" == "arm64" ]] && echo "true" || echo "false")
@@ -304,6 +306,12 @@ start_section() {
     TRACK_SECTION=1
     SECTION_ACTIVITY=0
     CURRENT_SECTION="$1"
+
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_section_start "$1"
+        return 0
+    fi
+
     echo ""
     echo -e "${PURPLE_BOLD}${ICON_ARROW} $1${NC}"
 
@@ -315,6 +323,11 @@ start_section() {
 }
 
 end_section() {
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_section_end
+        return 0
+    fi
+
     stop_section_spinner
 
     if [[ "${TRACK_SECTION:-0}" == "1" && "${SECTION_ACTIVITY:-0}" == "0" ]]; then
@@ -892,6 +905,17 @@ safe_clean() {
             label+=" ${#targets[@]} items"
         fi
 
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            local json_status="cleaned"
+            [[ "$DRY_RUN" == "true" ]] && json_status="dry_run"
+            json_record_item "$label" "$total_size_kb" "$size_human" "$json_status"
+            files_cleaned=$((files_cleaned + total_count))
+            total_size_cleaned=$((total_size_cleaned + total_size_kb))
+            total_items=$((total_items + 1))
+            note_activity
+            return 0
+        fi
+
         if [[ "$DRY_RUN" == "true" ]]; then
             local size_display
             size_display=$(colorize_human_size "$size_human")
@@ -973,6 +997,11 @@ start_cleanup() {
     export MOLE_CURRENT_COMMAND="clean"
     log_operation_session_start "clean"
     DRY_RUN_SEEN_IDENTITIES=()
+
+    # JSON mode: skip all terminal UI output
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        return 0
+    fi
 
     if [[ -t 1 ]]; then
         printf '\033[2J\033[H'
@@ -1296,6 +1325,17 @@ perform_cleanup() {
     fi
 
     # ===== Final summary =====
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        local free_space_kb=""
+        free_space_kb=$(get_free_space_kb 2> /dev/null || echo "")
+        local wl_count=${#WHITELIST_PATTERNS[@]}
+        JSON_DRY_RUN=$DRY_RUN
+        JSON_COMMAND="clean"
+        json_emit_summary "$total_size_cleaned" "$files_cleaned" "$total_items" "$free_space_kb" "$wl_count"
+        log_operation_session_end "clean" "$files_cleaned" "$total_size_cleaned"
+        return 0
+    fi
+
     echo ""
 
     local summary_heading=""
@@ -1434,6 +1474,9 @@ main() {
                 DRY_RUN=true
                 export MOLE_DRY_RUN=1
                 ;;
+            "--json")
+                JSON_OUTPUT=true
+                ;;
             "--external")
                 shift
                 if [[ $# -eq 0 ]]; then
@@ -1467,9 +1510,13 @@ main() {
     done
 
     start_cleanup
-    hide_cursor
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        hide_cursor
+    fi
     perform_cleanup
-    show_cursor
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        show_cursor
+    fi
     exit 0
 }
 
