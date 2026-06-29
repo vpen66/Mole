@@ -45,18 +45,55 @@ const quickActions = [
     color: "text-purple-400",
     bg: "bg-purple-950/30",
   },
+  {
+    icon: HardDrive,
+    label: "Analyze Disk",
+    desc: "Explore disk usage visually",
+    to: "/analyze",
+    color: "text-cyan-400",
+    bg: "bg-cyan-950/30",
+  },
 ];
 
 export function DashboardPage() {
   const navigate = useNavigate();
   const [version, setVersion] = useState<MoleVersion | null>(null);
   const [freeSpace, setFreeSpace] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    invoke<MoleVersion>("get_mole_version").then(setVersion).catch(() => null);
-    invoke<number>("get_free_space_kb")
-      .then(setFreeSpace)
-      .catch(() => null);
+    let mounted = true;
+    
+    async function fetchData() {
+      try {
+        const versionData = await invoke<MoleVersion>("get_mole_version");
+        if (mounted) {
+          setVersion(versionData);
+        }
+      } catch (err) {
+        console.error("Failed to get Mole version:", err);
+        // Don't set to null on error - keep existing state or show loading
+      }
+      
+      try {
+        const spaceData = await invoke<number>("get_free_space_kb");
+        if (mounted) {
+          setFreeSpace(spaceData);
+        }
+      } catch (err) {
+        console.error("Failed to get free space:", err);
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    }
+    
+    fetchData();
+    
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   return (
@@ -89,7 +126,13 @@ export function DashboardPage() {
           <div>
             <div className="text-xs text-surface-400">Mole CLI</div>
             <div className="text-sm font-semibold">
-              {version?.installed ? `v${version.version}` : "Not installed"}
+              {loading ? (
+                <span className="text-surface-500">Loading...</span>
+              ) : version?.installed ? (
+                `v${version.version}`
+              ) : (
+                "Not installed"
+              )}
             </div>
           </div>
         </div>
@@ -123,7 +166,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {!version?.installed && (
+      {!loading && !version?.installed && (
         <div className="bg-yellow-950/30 border border-yellow-800/40 rounded-xl p-4 text-sm text-yellow-300">
           <strong>Mole CLI not found.</strong> Please install Mole first:
           <code className="block mt-2 text-xs bg-surface-900 p-2 rounded font-mono">

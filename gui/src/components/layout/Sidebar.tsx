@@ -6,6 +6,8 @@ import {
   Zap,
   History,
   LayoutDashboard,
+  HardDrive,
+  Settings2,
 } from "lucide-react";
 
 const navItems = [
@@ -14,7 +16,9 @@ const navItems = [
   { to: "/uninstall", icon: Download, label: "Uninstall" },
   { to: "/purge", icon: FolderOpen, label: "Purge" },
   { to: "/optimize", icon: Zap, label: "Optimize" },
+  { to: "/analyze", icon: HardDrive, label: "Analyze" },
   { to: "/history", icon: History, label: "History" },
+  { to: "/settings", icon: Settings2, label: "Settings" },
 ];
 
 export function Sidebar() {

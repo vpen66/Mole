@@ -22,6 +22,9 @@ trap cleanup_temp_files EXIT INT TERM
 source "$SCRIPT_DIR/../lib/ui/menu_paginated.sh"
 source "$SCRIPT_DIR/../lib/ui/app_selector.sh"
 source "$SCRIPT_DIR/../lib/uninstall/batch.sh"
+# Re-set SCRIPT_DIR after batch.sh changes it
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/core/json_output.sh"
 
 # State
 selected_apps=()
@@ -30,6 +33,7 @@ declare -a selection_state=()
 total_items=0
 files_cleaned=0
 total_size_cleaned=0
+JSON_OUTPUT=false
 
 readonly MOLE_UNINSTALL_META_CACHE_DIR="$HOME/.cache/mole"
 readonly MOLE_UNINSTALL_META_CACHE_FILE="$MOLE_UNINSTALL_META_CACHE_DIR/uninstall_app_metadata_v1"
@@ -1363,7 +1367,14 @@ main() {
     # Parse flags and collect app name arguments
     local -a app_name_args=()
     local list_mode=0
+    local targets_arg=""
+    local next_is_targets=false
     for arg in "$@"; do
+        if [[ "$next_is_targets" == true ]]; then
+            targets_arg="$arg"
+            next_is_targets=false
+            continue
+        fi
         case "$arg" in
             "--help" | "-h")
                 show_uninstall_help
@@ -1380,6 +1391,12 @@ main() {
                 ;;
             "--list")
                 list_mode=1
+                ;;
+            "--json")
+                JSON_OUTPUT=true
+                ;;
+            "--targets")
+                next_is_targets=true
                 ;;
             "--whitelist")
                 echo "Unknown uninstall option: $arg"
@@ -1403,6 +1420,98 @@ main() {
     if [[ $list_mode -eq 1 ]]; then
         uninstall_list_apps
         return $?
+    fi
+
+    # --json scan mode: output NDJSON app list and exit.
+    if [[ "$JSON_OUTPUT" == true && -z "$targets_arg" ]]; then
+        local apps_file=""
+        if ! apps_file=$(scan_applications); then
+            json_emit_error "Scan failed" "scan_failed"
+            return 1
+        fi
+        if [[ ! -f "$apps_file" ]]; then
+            json_emit_error "No apps file" "no_apps"
+            return 1
+        fi
+        if ! load_applications "$apps_file"; then
+            rm -f "$apps_file"
+            json_emit_error "Load failed" "load_failed"
+            return 1
+        fi
+        rm -f "$apps_file"
+
+        local app_count=${#apps_data[@]}
+        local json_app_data
+        for json_app_data in "${apps_data[@]+"${apps_data[@]}"}"; do
+            IFS='|' read -r _ ja_path ja_name ja_bundle_id ja_size ja_last_used ja_size_kb <<< "$json_app_data"
+            local ja_size_human
+            ja_size_human=$(bytes_to_human "$(( ${ja_size_kb:-0} * 1024 ))")
+            printf '{"type":"app","name":"%s","path":"%s","bundle_id":"%s","size_kb":%s,"size_human":"%s","last_used":"%s"}\n' \
+                "$(json_escape "$ja_name")" \
+                "$(json_escape "$ja_path")" \
+                "$(json_escape "$ja_bundle_id")" \
+                "${ja_size_kb:-0}" \
+                "$(json_escape "$ja_size_human")" \
+                "$(json_escape "${ja_last_used:-}")"
+        done
+        printf '{"type":"summary","command":"uninstall","total_apps":%d}\n' "$app_count"
+        return 0
+    fi
+
+    # --json --targets mode: match and uninstall, outputting NDJSON.
+    if [[ "$JSON_OUTPUT" == true && -n "$targets_arg" ]]; then
+        local apps_file=""
+        if ! apps_file=$(scan_applications); then
+            json_emit_error "Scan failed" "scan_failed"
+            return 1
+        fi
+        if [[ ! -f "$apps_file" ]]; then
+            json_emit_error "No apps file" "no_apps"
+            return 1
+        fi
+        if ! load_applications "$apps_file"; then
+            rm -f "$apps_file"
+            json_emit_error "Load failed" "load_failed"
+            return 1
+        fi
+
+        # Parse pipe-delimited targets into array.
+        local old_ifs="${IFS:-}"
+        IFS='|'
+        local -a json_targets=($targets_arg)
+        IFS="$old_ifs"
+
+        # Match targets; redirect stdout to stderr to keep NDJSON stream clean.
+        match_apps_by_name "${json_targets[@]}" 1>&2
+        rm -f "$apps_file"
+
+        if [[ ${#selected_apps[@]} -eq 0 ]]; then
+            json_emit_error "No matching applications found" "no_match"
+            return 1
+        fi
+
+        # Emit matched apps as NDJSON item events.
+        local json_selected
+        for json_selected in "${selected_apps[@]}"; do
+            IFS='|' read -r _ js_path js_name js_bundle_id js_size js_last_used js_size_kb <<< "$json_selected"
+            local js_size_human
+            js_size_human=$(bytes_to_human "$(( ${js_size_kb:-0} * 1024 ))")
+            printf '{"type":"item","name":"%s","path":"%s","bundle_id":"%s","size_kb":%s,"size_human":"%s","status":"matched"}\n' \
+                "$(json_escape "$js_name")" \
+                "$(json_escape "$js_path")" \
+                "$(json_escape "$js_bundle_id")" \
+                "${js_size_kb:-0}" \
+                "$(json_escape "$js_size_human")"
+        done
+
+        json_emit_progress "uninstall" "Uninstalling ${#selected_apps[@]} app(s)..."
+
+        # Run batch uninstall; redirect its stdout to stderr to keep NDJSON clean.
+        batch_uninstall_applications 1>&2
+
+        local uninstall_count=${#selected_apps[@]}
+        printf '{"type":"summary","command":"uninstall","total_apps":%d,"status":"completed"}\n' "$uninstall_count"
+        return 0
     fi
 
     hide_cursor

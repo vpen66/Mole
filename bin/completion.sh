@@ -11,10 +11,13 @@ for entry in "${MOLE_COMMANDS[@]}"; do
     command_names+=("${entry%%:*}")
 done
 command_words="${command_names[*]}"
-clean_option_words="--dry-run -n --external --whitelist --debug --help -h"
+clean_option_words="--dry-run -n --external --whitelist --json --debug --help -h"
 analyze_option_words="--json --help -h"
 history_option_words="--json --limit --help -h"
-purge_option_words="--paths --dry-run -n --include-empty --debug --help -h"
+purge_option_words="--paths --dry-run -n --include-empty --json --debug --help -h"
+uninstall_option_words="--list --json --debug --help -h"
+optimize_option_words="--dry-run -n --whitelist --json --debug --help -h"
+installer_option_words="--dry-run -n --debug --help -h"
 
 emit_zsh_subcommands() {
     for entry in "${MOLE_COMMANDS[@]}"; do
@@ -34,8 +37,21 @@ emit_fish_completions() {
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from clean" -l dry-run -s n -d "Preview cleanup without making changes"\n' "$cmd"
     printf 'complete -c %s -n "__fish_seen_subcommand_from clean" -l external -r -a "(__fish_complete_directories)" -d "Clean OS metadata from an external volume"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from clean" -l whitelist -d "Manage protected paths"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from clean" -l json -d "Emit NDJSON events for GUI/CI consumers"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from clean" -l debug -d "Show detailed logs"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from clean" -l help -s h -d "Show help"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from uninstall" -l list -d "List installed apps"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from uninstall" -l json -d "Emit NDJSON events for GUI/CI consumers"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from uninstall" -l debug -d "Show detailed logs"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from uninstall" -l help -s h -d "Show help"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from optimize optimise" -l dry-run -s n -d "Preview optimization without making changes"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from optimize optimise" -l whitelist -d "Manage protected items"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from optimize optimise" -l json -d "Emit NDJSON events for GUI/CI consumers"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from optimize optimise" -l debug -d "Show detailed logs"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from optimize optimise" -l help -s h -d "Show help"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from installer" -l dry-run -s n -d "Preview installer cleanup without making changes"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from installer" -l debug -d "Show detailed logs"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from installer" -l help -s h -d "Show help"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from analyze analyse" -l json -d "Output analysis as JSON"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from analyze analyse" -l help -s h -d "Show help"\n' "$cmd"
     printf 'complete -c %s -n "__fish_seen_subcommand_from analyze analyse; and not __fish_seen_argument -l json -l help -s h" -a "(__fish_complete_directories)" -d "Path to analyze"\n' "$cmd"
@@ -45,6 +61,7 @@ emit_fish_completions() {
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l paths -d "Edit custom scan directories"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l dry-run -s n -d "Preview purge actions without making changes"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l include-empty -d "Show zero-size project artifact directories"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l json -d "Emit NDJSON events for GUI/CI consumers"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l debug -d "Show detailed logs"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l help -s h -d "Show help"\n' "$cmd"
     printf '\n'
@@ -332,6 +349,15 @@ _mole_completions()
                         ;;
                 esac
                 ;;
+            uninstall)
+                COMPREPLY=( \$(compgen -W "$uninstall_option_words" -- "\$cur_word") )
+                ;;
+            optimize|optimise)
+                COMPREPLY=( \$(compgen -W "$optimize_option_words" -- "\$cur_word") )
+                ;;
+            installer)
+                COMPREPLY=( \$(compgen -W "$installer_option_words" -- "\$cur_word") )
+                ;;
             analyze|analyse)
                 if [[ "\$cur_word" == -* ]]; then
                     COMPREPLY=( \$(compgen -W "$analyze_option_words" -- "\$cur_word") )
@@ -376,6 +402,23 @@ EOF
         printf "                '-n[Preview cleanup without making changes]' \\\\\n"
         printf "                '--external[Clean OS metadata from an external volume]:path:_files -/' \\\\\n"
         printf "                '--whitelist[Manage protected paths]' \\\\\n"
+        printf "                '--json[Emit NDJSON events for GUI/CI consumers]' \\\\\n"
+        printf "                '--debug[Show detailed logs]' \\\\\n"
+        printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
+        printf '            ;;\n'
+        printf '        uninstall)\n'
+        printf '            _arguments \\\n'
+        printf "                '--list[List installed apps]' \\\\\n"
+        printf "                '--json[Emit NDJSON events for GUI/CI consumers]' \\\\\n"
+        printf "                '--debug[Show detailed logs]' \\\\\n"
+        printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
+        printf '            ;;\n'
+        printf '        optimize|optimise)\n'
+        printf '            _arguments \\\n'
+        printf "                '--dry-run[Preview optimization without making changes]' \\\\\n"
+        printf "                '-n[Preview optimization without making changes]' \\\\\n"
+        printf "                '--whitelist[Manage protected items]' \\\\\n"
+        printf "                '--json[Emit NDJSON events for GUI/CI consumers]' \\\\\n"
         printf "                '--debug[Show detailed logs]' \\\\\n"
         printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
         printf '            ;;\n'
@@ -397,6 +440,14 @@ EOF
         printf "                '--dry-run[Preview purge actions without making changes]' \\\\\n"
         printf "                '-n[Preview purge actions without making changes]' \\\\\n"
         printf "                '--include-empty[Show zero-size project artifact directories]' \\\\\n"
+        printf "                '--json[Emit NDJSON events for GUI/CI consumers]' \\\\\n"
+        printf "                '--debug[Show detailed logs]' \\\\\n"
+        printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
+        printf '            ;;\n'
+        printf '        installer)\n'
+        printf '            _arguments \\\n'
+        printf "                '--dry-run[Preview installer cleanup without making changes]' \\\\\n"
+        printf "                '-n[Preview installer cleanup without making changes]' \\\\\n"
         printf "                '--debug[Show detailed logs]' \\\\\n"
         printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
         printf '            ;;\n'

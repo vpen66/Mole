@@ -30,5 +30,11 @@
     <true/>
     <key>NSSupportsSuddenTermination</key>
     <true/>
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Mole needs permission to send Apple Events to automate system tasks.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Mole needs access to the Desktop folder to clean up files.</string>
 </dict>
 </plist>

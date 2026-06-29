@@ -656,6 +656,21 @@ _batch_preview_and_confirm() {
     fi
     echo -ne "${PURPLE}${ICON_ARROW}${NC} ${removal_note}  ${GREEN}Enter${NC} confirm, ${GRAY}ESC${NC} cancel: "
 
+    # Auto-confirm in JSON mode; skip interactive prompt.
+    if [[ "${JSON_OUTPUT:-false}" == true ]]; then
+        echo ""
+        export MOLE_UNINSTALL_MODE=1
+        if [[ "${MOLE_DRY_RUN:-0}" != "1" ]] &&
+            { [[ ${#sudo_apps[@]} -gt 0 ]] || [[ ${#brew_cask_apps[@]} -gt 0 ]]; }; then
+            if ! ensure_sudo_session "Admin required to uninstall selected apps"; then
+                echo ""
+                log_error "Admin access denied"
+                return 1
+            fi
+        fi
+        return 0
+    fi
+
     drain_pending_input # Clean up any pending input before confirmation
     IFS= read -r -s -n1 key || key=""
     drain_pending_input # Clean up any escape sequence remnants

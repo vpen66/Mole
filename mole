@@ -48,7 +48,7 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.44.1"
+VERSION="1.44.2"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
@@ -392,6 +392,7 @@ show_help() {
     echo
     printf "%s%s%s\n" "$BLUE" "OPTIONS" "$NC"
     printf "  %s%-28s%s %s\n" "$GREEN" "--debug" "$NC" "Show detailed operation logs"
+    printf "  %s%-28s%s %s\n" "$GREEN" "--json" "$NC" "Emit NDJSON events for GUI/CI consumers"
     echo
 }
 

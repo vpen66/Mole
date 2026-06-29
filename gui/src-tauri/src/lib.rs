@@ -7,6 +7,7 @@ use commands::*;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             get_mole_version,
             get_free_space_kb,
@@ -18,7 +19,14 @@ pub fn run() {
             purge_execute,
             optimize_dry_run,
             optimize_execute,
+            analyze_scan,
+            analyze_delete,
             get_history,
+            check_sudo_session,
+            request_sudo_session,
+            stop_sudo_session,
+            get_mole_path_config,
+            set_mole_path_config,
         ])
         .setup(|app| {
             let _window = tauri::WebviewWindowBuilder::new(

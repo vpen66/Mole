@@ -13,7 +13,7 @@ import {
   CheckSquare,
   AlertTriangle,
 } from "lucide-react";
-import type { AppInfo, UninstallScanResult } from "@/types/uninstall";
+import type { AppInfo } from "@/types/uninstall";
 
 export function UninstallPage() {
   const [apps, setApps] = useState<AppInfo[]>([]);
@@ -27,10 +27,16 @@ export function UninstallPage() {
     error,
     execute: runScan,
     reset,
-  } = useMoleCommand<UninstallScanResult>({ command: "uninstall_scan_apps" });
+  } = useMoleCommand<AppInfo[]>({ command: "uninstall_scan_apps" });
 
   useEffect(() => {
-    runScan();
+    const scanApps = async () => {
+      const result = await runScan();
+      if (result) {
+        setApps(result);
+      }
+    };
+    scanApps();
   }, [runScan]);
 
   const toggleApp = (name: string) => {

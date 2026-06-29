@@ -1117,6 +1117,32 @@ clean_project_artifacts() {
         safe_to_clean+=("$item")
         safe_recent_flags+=("$is_recent")
     done
+    # Filter by JSON targets if specified (pipe-separated paths from GUI)
+    if [[ -n "${MOLE_PURGE_JSON_TARGETS:-}" ]]; then
+        local _jt_raw="${MOLE_PURGE_JSON_TARGETS}"
+        _jt_raw="${_jt_raw//\~/$HOME}"
+        local -a _jt_arr=()
+        local _OLD_IFS="$IFS"
+        IFS='|'
+        read -r -a _jt_arr <<< "$_jt_raw"
+        IFS="$_OLD_IFS"
+        local -a _filtered_items=()
+        local -a _filtered_recent=()
+        local _jt_i _jt_target
+        for _jt_i in "${!safe_to_clean[@]}"; do
+            local _jt_item="${safe_to_clean[$_jt_i]}"
+            for _jt_target in "${_jt_arr[@]}"; do
+                [[ -z "$_jt_target" ]] && continue
+                if [[ "$_jt_item" == "$_jt_target" || "$_jt_item" == "$_jt_target/"* ]]; then
+                    _filtered_items+=("$_jt_item")
+                    _filtered_recent+=("${safe_recent_flags[$_jt_i]}")
+                    break
+                fi
+            done
+        done
+        safe_to_clean=("${_filtered_items[@]+"${_filtered_items[@]}"}")
+        safe_recent_flags=("${_filtered_recent[@]+"${_filtered_recent[@]}"}")
+    fi
     # Build menu options - one per artifact
     if [[ -t 1 ]]; then
         start_inline_spinner "Calculating sizes..."
