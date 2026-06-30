@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+// jsonStdoutMu serialises NDJSON writes to stdout so that progress-ticker
+// goroutines and the main emission goroutine never interleave lines.
+var jsonStdoutMu sync.Mutex
+
 type jsonOutput struct {
 	Path       string          `json:"path"`
 	Overview   bool            `json:"overview"`
@@ -38,19 +42,206 @@ type jsonFileEntry struct {
 }
 
 func runJSONMode(path string, isOverview bool) {
-	result := performScanForJSON(path, isOverview)
+	// Emit initial progress event.
+	scanMsg := fmt.Sprintf("Scanning %s...", path)
+	if isOverview {
+		scanMsg = "Scanning system overview..."
+	}
+	emitJSONEvent(map[string]any{
+		"type":    "progress",
+		"message": scanMsg,
+	})
 
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(result); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to encode JSON: %v\n", err)
+	if isOverview {
+		runOverviewJSONStream(path)
+	} else {
+		runDirectoryJSONStream(path)
+	}
+}
+
+// runDirectoryJSONStream scans a directory and streams entries as NDJSON events.
+// Entries are emitted as soon as each child is measured, so the frontend
+// can display progress incrementally instead of waiting for the full scan.
+// Event sequence: progress (periodic) → entry* (streamed) → large_file* → summary
+func runDirectoryJSONStream(path string) {
+	var filesScanned, dirsScanned, bytesScanned int64
+	currentPath := &atomic.Value{}
+	currentPath.Store("")
+
+	// Emit periodic progress events while the scan runs.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cp, _ := currentPath.Load().(string)
+				bs := atomic.LoadInt64(&bytesScanned)
+				emitJSONScanProgress(cp, bs)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Stream entries as they are discovered during scanning.
+	result, err := scanPathConcurrentAllEntries(path, &filesScanned, &dirsScanned, &bytesScanned, currentPath, func(e dirEntry) {
+		entry := jsonEntriesFromDirEntries([]dirEntry{e}, false, nil)
+		if len(entry) > 0 {
+			emitJSONEntryEvent(entry[0])
+		}
+	})
+	close(done)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to scan directory: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Entries already streamed during scan; skip re-emission.
+	// Only emit large files and summary.
+	largeFiles := jsonFileEntriesFromFileEntries(result.LargeFiles)
+	for _, file := range largeFiles {
+		emitJSONLargeFileEvent(file)
+	}
+
+	emitJSONEvent(map[string]any{
+		"type":        "summary",
+		"path":        path,
+		"overview":    false,
+		"total_size":  result.TotalSize,
+		"total_files": result.TotalFiles,
+	})
+}
+
+// runOverviewJSONStream scans the system overview and streams entries as they are measured.
+func runOverviewJSONStream(path string) {
+	// Emit periodic progress while overview entries are measured.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				jsonStdoutMu.Lock()
+				data, _ := json.Marshal(map[string]any{
+					"type":    "progress",
+					"message": "Measuring directories...",
+				})
+				fmt.Fprintf(os.Stdout, "%s\n", data)
+				jsonStdoutMu.Unlock()
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Stream entries as each directory measurement completes.
+	var emittedPaths sync.Map
+	result := performOverviewScanForJSON(path, func(e jsonEntry) {
+		emittedPaths.Store(e.Path, true)
+		emitJSONEntryEvent(e)
+	})
+	close(done)
+
+	// Emit any entries not yet streamed (e.g. zero-size filtered during measurement).
+	for _, entry := range result.Entries {
+		if _, emitted := emittedPaths.Load(entry.Path); !emitted {
+			emitJSONEntryEvent(entry)
+		}
+	}
+
+	emitJSONEvent(map[string]any{
+		"type":       "summary",
+		"path":       result.Path,
+		"overview":   result.Overview,
+		"total_size": result.TotalSize,
+	})
+}
+
+// emitJSONEvent writes a single NDJSON line to stdout (thread-safe).
+func emitJSONEvent(v any) {
+	jsonStdoutMu.Lock()
+	defer jsonStdoutMu.Unlock()
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", data)
+}
+
+// emitJSONScanProgress emits a progress event showing the current scan position.
+func emitJSONScanProgress(currentPath string, bytesScanned int64) {
+	msg := "Scanning..."
+	if currentPath != "" {
+		msg = fmt.Sprintf("Scanning %s (%s scanned)...", currentPath, formatSize(bytesScanned))
+	} else if bytesScanned > 0 {
+		msg = fmt.Sprintf("Scanning... (%s scanned)", formatSize(bytesScanned))
+	}
+	jsonStdoutMu.Lock()
+	data, _ := json.Marshal(map[string]any{
+		"type":    "progress",
+		"message": msg,
+	})
+	fmt.Fprintf(os.Stdout, "%s\n", data)
+	jsonStdoutMu.Unlock()
+}
+
+// formatSize returns a human-readable byte size string.
+func formatSize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
+	case bytes >= GB:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// emitJSONEntryEvent emits a single entry as an NDJSON event.
+func emitJSONEntryEvent(entry jsonEntry) {
+	event := map[string]any{
+		"type":      "entry",
+		"name":      entry.Name,
+		"path":      entry.Path,
+		"size":      entry.Size,
+		"is_dir":    entry.IsDir,
+		"cleanable": entry.Cleanable,
+	}
+	if entry.Insight {
+		event["insight"] = true
+	}
+	if entry.LastAccess != "" {
+		event["last_access"] = entry.LastAccess
+	}
+	emitJSONEvent(event)
+}
+
+// emitJSONLargeFileEvent emits a single large file as an NDJSON event.
+func emitJSONLargeFileEvent(file jsonFileEntry) {
+	emitJSONEvent(map[string]any{
+		"type": "large_file",
+		"name": file.Name,
+		"path": file.Path,
+		"size": file.Size,
+	})
 }
 
 func performScanForJSON(path string, isOverview bool) jsonOutput {
 	if isOverview {
-		return performOverviewScanForJSON(path)
+		return performOverviewScanForJSON(path, nil)
 	}
 	return performDirectoryScanForJSON(path)
 }
@@ -60,7 +251,7 @@ func performDirectoryScanForJSON(path string) jsonOutput {
 	currentPath := &atomic.Value{}
 	currentPath.Store("")
 
-	result, err := scanPathConcurrentAllEntries(path, &filesScanned, &dirsScanned, &bytesScanned, currentPath)
+	result, err := scanPathConcurrentAllEntries(path, &filesScanned, &dirsScanned, &bytesScanned, currentPath, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to scan directory: %v\n", err)
 		os.Exit(1)
@@ -76,7 +267,7 @@ func performDirectoryScanForJSON(path string) jsonOutput {
 	}
 }
 
-func performOverviewScanForJSON(path string) jsonOutput {
+func performOverviewScanForJSON(path string, onEntry func(jsonEntry)) jsonOutput {
 	insightEntries := createInsightEntries()
 	overviewEntries := createOverviewEntriesWithInsights(insightEntries)
 	insightPaths := make(map[string]bool, len(insightEntries))
@@ -86,7 +277,7 @@ func performOverviewScanForJSON(path string) jsonOutput {
 
 	var totalSize int64
 	entries := make([]dirEntry, 0, len(overviewEntries))
-	for _, entry := range measureOverviewEntriesForJSON(overviewEntries, insightPaths) {
+	for _, entry := range measureOverviewEntriesForJSON(overviewEntries, insightPaths, onEntry) {
 		// Match the TUI: omit scanned insight/tool entries that ended up empty.
 		if entry.Size == 0 {
 			continue
@@ -107,7 +298,7 @@ func performOverviewScanForJSON(path string) jsonOutput {
 	}
 }
 
-func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[string]bool) []dirEntry {
+func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[string]bool, onEntry func(jsonEntry)) []dirEntry {
 	if len(overviewEntries) == 0 {
 		return nil
 	}
@@ -142,6 +333,13 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 
 			if err == nil {
 				item.Size = size
+			}
+			// Stream entry as soon as it is measured.
+			if onEntry != nil && item.Size > 0 {
+				je := jsonEntriesFromDirEntries([]dirEntry{item}, true, insightPaths)
+				if len(je) > 0 {
+					onEntry(je[0])
+				}
 			}
 			results <- measurement{index: index, entry: item}
 		})

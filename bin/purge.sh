@@ -22,9 +22,12 @@ trap cleanup EXIT
 trap 'trap - EXIT; cleanup; exit 130' INT TERM
 source "$SCRIPT_DIR/../lib/core/log.sh"
 source "$SCRIPT_DIR/../lib/clean/project.sh"
+source "$SCRIPT_DIR/../lib/core/json_output.sh"
 
 # Configuration
 CURRENT_SECTION=""
+JSON_OUTPUT=false
+JSON_TARGETS=""
 
 # IMPORTANT: This file overrides start_section / end_section / note_activity
 # from lib/core/base.sh by virtue of being sourced after it. The purge variant
@@ -36,6 +39,10 @@ CURRENT_SECTION=""
 start_section() {
     local section_name="$1"
     CURRENT_SECTION="$section_name"
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_emit_progress "$section_name" "Scanning..."
+        return
+    fi
     printf '\n'
     echo -e "${BLUE}━━━ ${section_name} ━━━${NC}"
 }
@@ -45,6 +52,7 @@ end_section() {
 }
 
 note_activity() {
+    [[ "$JSON_OUTPUT" == "true" ]] && return 0
     if [[ -n "$CURRENT_SECTION" ]]; then
         printf '%s\n' "$CURRENT_SECTION" >> "$EXPORT_LIST_FILE"
     fi
@@ -104,7 +112,7 @@ start_purge() {
     log_operation_session_start "purge"
 
     # Clear screen for better UX
-    if [[ -t 1 ]]; then
+    if [[ "$JSON_OUTPUT" != "true" && -t 1 ]]; then
         printf '\033[2J\033[H'
     fi
 
@@ -156,7 +164,9 @@ perform_purge() {
     trap handle_interrupt INT TERM
 
     # Show scanning with spinner below the title line
-    if [[ -t 1 ]]; then
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_emit_progress "purge" "Scanning for project artifacts..."
+    elif [[ -t 1 ]]; then
         # Print title ONCE with newline; spinner occupies the line below
         printf '%s\n' "${PURPLE_BOLD}Purge Project Artifacts${NC}"
 
@@ -223,7 +233,11 @@ perform_purge() {
         echo -e "${PURPLE_BOLD}Purge Project Artifacts${NC}"
     fi
 
-    clean_project_artifacts
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        clean_project_artifacts 2>/dev/null
+    else
+        clean_project_artifacts
+    fi
     local exit_code=$?
 
     # Clean up
@@ -235,11 +249,17 @@ perform_purge() {
     # 1 = user cancelled
     # 2 = nothing to clean
     if [[ $exit_code -ne 0 ]]; then
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            JSON_DRY_RUN=false
+            JSON_COMMAND="purge"
+            [[ "${MOLE_DRY_RUN:-0}" == "1" ]] && JSON_DRY_RUN=true
+            json_emit_summary 0 0 0 0
+        fi
         return 0
     fi
 
     # Final summary (matching clean.sh format)
-    echo ""
+    [[ "$JSON_OUTPUT" != "true" ]] && echo ""
 
     local summary_heading="Purge complete"
     local -a summary_details=()
@@ -279,6 +299,23 @@ perform_purge() {
     # Log session end
     log_operation_session_end "purge" "${total_items_cleaned:-0}" "${total_size_cleaned:-0}"
 
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        JSON_DRY_RUN=false
+        JSON_COMMAND="purge"
+        [[ "${MOLE_DRY_RUN:-0}" == "1" ]] && JSON_DRY_RUN=true
+        local free_kb
+        free_kb=$(get_free_space)
+        # Strip non-numeric chars (get_free_space may return human-readable)
+        free_kb="${free_kb%%[^0-9]*}"
+        [[ -z "$free_kb" ]] && free_kb=0
+        json_emit_summary \
+            "${total_size_cleaned:-0}" \
+            "${total_items_cleaned:-0}" \
+            0 \
+            "$free_kb"
+        return 0
+    fi
+
     print_summary_block "$summary_heading" "${summary_details[@]}"
     printf '\n'
 }
@@ -293,6 +330,8 @@ show_help() {
     echo "  --paths         Edit custom scan directories"
     echo "  --dry-run       Preview purge actions without making changes"
     echo "  --include-empty Show zero-size project artifact directories"
+    echo "  --json          Emit NDJSON events for GUI/CI consumers"
+    echo "  --targets PATHS Pipe-separated target paths (with --json)"
     echo "  --debug         Enable debug logging"
     echo "  --help          Show this help message"
     echo ""
@@ -305,8 +344,8 @@ show_help() {
 # Main entry point
 main() {
     # Parse arguments
-    for arg in "$@"; do
-        case "$arg" in
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
             "--paths")
                 source "$SCRIPT_DIR/../lib/manage/purge_paths.sh"
                 manage_purge_paths
@@ -318,15 +357,31 @@ main() {
                 ;;
             "--debug")
                 export MO_DEBUG=1
+                shift
                 ;;
             "--dry-run" | "-n")
                 export MOLE_DRY_RUN=1
+                shift
                 ;;
             "--include-empty")
                 export MOLE_PURGE_INCLUDE_EMPTY=1
+                shift
+                ;;
+            "--json")
+                JSON_OUTPUT=true
+                export MOLE_PURGE_JSON=1
+                export MOLE_PURGE_JSON_MODE="scan"
+                shift
+                ;;
+            "--targets")
+                JSON_TARGETS="${2:-}"
+                export MOLE_PURGE_JSON_TARGETS="$JSON_TARGETS"
+                export MOLE_PURGE_JSON_MODE="execute"
+                shift
+                [[ $# -gt 0 ]] && shift
                 ;;
             *)
-                echo "Unknown option: $arg"
+                echo "Unknown option: $1"
                 echo "Use 'mo purge --help' for usage information"
                 exit 1
                 ;;
@@ -334,11 +389,13 @@ main() {
     done
 
     start_purge
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No project artifacts will be removed"
-        printf '\n'
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No project artifacts will be removed"
+            printf '\n'
+        fi
+        hide_cursor
     fi
-    hide_cursor
     perform_purge
 }
 

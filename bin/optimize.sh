@@ -20,6 +20,12 @@ source "$SCRIPT_DIR/lib/optimize/maintenance.sh"
 source "$SCRIPT_DIR/lib/optimize/tasks.sh"
 source "$SCRIPT_DIR/lib/check/health_json.sh"
 source "$SCRIPT_DIR/lib/manage/whitelist.sh"
+source "$SCRIPT_DIR/lib/core/json_output.sh"
+
+# JSON streaming mode (set by --json flag)
+JSON_OUTPUT=false
+# Comma-separated action filter (set by --actions flag)
+ACTIONS_FILTER=""
 
 print_header() {
     printf '\n'
@@ -191,7 +197,13 @@ main() {
     export MOLE_CURRENT_COMMAND="optimize"
 
     local health_json
+    local await_actions_value=false
     for arg in "$@"; do
+        if [[ "$await_actions_value" == "true" ]]; then
+            ACTIONS_FILTER="$arg"
+            await_actions_value=false
+            continue
+        fi
         case "$arg" in
             "--help" | "-h")
                 show_optimize_help
@@ -203,9 +215,18 @@ main() {
             "--dry-run")
                 export MOLE_DRY_RUN=1
                 ;;
+            "--json")
+                JSON_OUTPUT=true
+                ;;
             "--whitelist")
                 manage_whitelist "optimize"
                 exit 0
+                ;;
+            --actions=*)
+                ACTIONS_FILTER="${arg#--actions=}"
+                ;;
+            --actions)
+                await_actions_value=true
                 ;;
             *)
                 echo "Unknown optimize option: $arg"
@@ -220,27 +241,39 @@ main() {
     trap cleanup_all EXIT
     trap handle_interrupt INT TERM
 
-    if [[ -t 1 ]]; then
-        clear_screen
-    fi
-    print_header
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        if [[ -t 1 ]]; then
+            clear_screen
+        fi
+        print_header
 
-    # Dry-run indicator.
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No files will be modified\n"
+        # Dry-run indicator.
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No files will be modified\n"
+        fi
     fi
 
     if ! command -v bc > /dev/null 2>&1; then
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            json_emit_error "Missing dependency: bc" "missing_dependency"
+            exit 1
+        fi
         echo -e "${YELLOW}${ICON_ERROR}${NC} Missing dependency: bc"
         echo -e "${GRAY}Install with: ${GREEN}brew install bc${NC}"
         exit 1
     fi
 
-    if [[ -t 1 ]]; then
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_emit_progress "health" "Collecting system info..."
+    elif [[ -t 1 ]]; then
         start_inline_spinner "Collecting system info..."
     fi
 
     if ! health_json=$(generate_health_json 2> /dev/null); then
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            json_emit_error "Failed to collect system health data" "health_collection_failed"
+            exit 1
+        fi
         if [[ -t 1 ]]; then
             stop_inline_spinner
         fi
@@ -250,6 +283,10 @@ main() {
     fi
 
     if ! json_validate "$health_json"; then
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            json_emit_error "Invalid system health data format" "health_validation_failed"
+            exit 1
+        fi
         if [[ -t 1 ]]; then
             stop_inline_spinner
         fi
@@ -259,25 +296,27 @@ main() {
         exit 1
     fi
 
-    if [[ -t 1 ]]; then
+    if [[ "$JSON_OUTPUT" != "true" ]] && [[ -t 1 ]]; then
         stop_inline_spinner
     fi
 
     load_whitelist "optimize"
-    if [[ ${#CURRENT_WHITELIST_PATTERNS[@]} -gt 0 ]]; then
-        local count=${#CURRENT_WHITELIST_PATTERNS[@]}
-        if [[ $count -le 3 ]]; then
-            local patterns_list=$(
-                IFS=', '
-                echo "${CURRENT_WHITELIST_PATTERNS[*]}"
-            )
-            echo -e "${ICON_ADMIN} Active Whitelist: ${patterns_list}"
+
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        if [[ ${#CURRENT_WHITELIST_PATTERNS[@]} -gt 0 ]]; then
+            local count=${#CURRENT_WHITELIST_PATTERNS[@]}
+            if [[ $count -le 3 ]]; then
+                local patterns_list=$(
+                    IFS=', '
+                    echo "${CURRENT_WHITELIST_PATTERNS[*]}"
+                )
+                echo -e "${ICON_ADMIN} Active Whitelist: ${patterns_list}"
+            fi
         fi
+
+        show_system_health "$health_json"
+        run_optimize_diagnostics
     fi
-
-    show_system_health "$health_json"
-
-    run_optimize_diagnostics
 
     local -a items=()
     local opts_file
@@ -286,10 +325,31 @@ main() {
 
     while IFS='|' read -r action name desc safe; do
         [[ -z "$action" ]] && continue
+        # If --actions filter is set, only include matching actions
+        if [[ -n "$ACTIONS_FILTER" ]]; then
+            local match=false
+            local IFS_OLD="$IFS"
+            IFS=','
+            for filter_action in $ACTIONS_FILTER; do
+                if [[ "$filter_action" == "$action" ]]; then
+                    match=true
+                    break
+                fi
+            done
+            IFS="$IFS_OLD"
+            if [[ "$match" != "true" ]]; then
+                continue
+            fi
+        fi
         items+=("${name}|${desc}|${action}|")
     done < "$opts_file"
 
-    echo ""
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        json_emit_progress "optimize" "Running optimizations..."
+    else
+        echo ""
+    fi
+
     # Track sudo availability so individual tasks can skip cleanly when admin
     # access was denied. Without this, every sudo task re-prompts for the
     # password and half-runs after a refusal. Default true in dry-run so the
@@ -297,6 +357,11 @@ main() {
     export MOLE_OPTIMIZE_SUDO_AVAILABLE="false"
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
         MOLE_OPTIMIZE_SUDO_AVAILABLE="true"
+    elif [[ "$JSON_OUTPUT" == "true" ]]; then
+        # In JSON mode, skip interactive sudo prompt; use existing session only
+        if sudo -n true 2> /dev/null; then
+            MOLE_OPTIMIZE_SUDO_AVAILABLE="true"
+        fi
     elif ensure_sudo_session "System optimization requires admin access"; then
         MOLE_OPTIMIZE_SUDO_AVAILABLE="true"
     else
@@ -304,20 +369,41 @@ main() {
     fi
 
     export FIRST_ACTION=true
-    for item in "${items[@]}"; do
-        IFS='|' read -r name desc action path <<< "$item"
-        if command -v is_whitelisted > /dev/null && is_whitelisted "$action"; then
-            opt_msg "Skipped (whitelisted): $name"
-            continue
-        fi
-        announce_action "$name" "$desc" "safe"
-        execute_optimization "$action" "$path"
-    done
+    local total_kb=0
+    local total_items=0
+    if [[ ${#items[@]} -gt 0 ]]; then
+        for item in "${items[@]}"; do
+            IFS='|' read -r name desc action path <<< "$item"
+            if command -v is_whitelisted > /dev/null && is_whitelisted "$action"; then
+                if [[ "$JSON_OUTPUT" == "true" ]]; then
+                    json_emit_item "optimize" "$name" 0 "" "skipped"
+                else
+                    opt_msg "Skipped (whitelisted): $name"
+                fi
+                continue
+            fi
+            if [[ "$JSON_OUTPUT" == "true" ]]; then
+                json_emit_item "optimize" "$name" 0 "" "completed"
+            else
+                announce_action "$name" "$desc" "safe"
+            fi
+            execute_optimization "$action" "$path"
+            total_items=$((total_items + 1))
+        done
+    fi
 
     local safe_count=${#items[@]}
 
     export OPTIMIZE_SAFE_COUNT=$safe_count
     export OPTIMIZE_CONFIRM_COUNT=0
+
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        JSON_DRY_RUN=$([[ "${MOLE_DRY_RUN:-0}" == "1" ]] && echo "true" || echo "false")
+        JSON_COMMAND="optimize"
+        json_emit_summary "$total_kb" "0" "$total_items"
+        log_operation_session_end "optimize" "$safe_count" "0"
+        return 0
+    fi
 
     show_optimization_summary
 
